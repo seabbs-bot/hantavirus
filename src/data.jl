@@ -1,11 +1,12 @@
-## Line-list loading, exposure/onset encoding, and R(t) bin definitions.
+## Line-list loading, exposure/onset encoding, and R(t) knot definitions.
 
 const LINELIST_PATH = joinpath(pkgdir(@__MODULE__), "data", "linelist.csv")
 const OUTPUT_DIR    = joinpath(pkgdir(@__MODULE__), "output")
 const FIGURES_DIR   = joinpath(pkgdir(@__MODULE__), "figures")
 
-# Weekly R(t) bin edges spanning the outbreak.
-const BIN_EDGES = collect(Date("2018-11-12"):Day(7):Date("2019-02-04"))
+# Weekly knot dates for log R(t). R(t) is the linear interpolation of log_R
+# between these knots, so R(t) is continuous in t with no step jumps.
+const KNOTS = collect(Date("2018-11-12"):Day(7):Date("2019-02-04"))
 
 function load_linelist(path = LINELIST_PATH)
     ll = CSV.read(path, DataFrame; missingstring = ["NA"],
@@ -50,21 +51,20 @@ function build_data(ll)
             source_idx, Zobs = Int.(ll.Z), N = nrow(ll))
 end
 
-bin_edges_day(t0) = Float64[Dates.value(d - t0) for d in BIN_EDGES]
+knot_days(t0) = Float64[Dates.value(d - t0) for d in KNOTS]
 
-function which_bin(t::Real, edges::Vector{Float64})
-    for (b, e) in enumerate(edges)
-        t < e && return b
-    end
-    return length(edges) + 1
+# Linear interpolation of log_R between knots. Clamped to the endpoint values
+# outside the knot range so the function is well-defined for any t. R(t) is
+# continuous in t and its gradient w.r.t. t is well-defined (piecewise
+# constant), which removes the step-jump discontinuity that the previous
+# piecewise-constant `which_bin` formulation imposed on NUTS.
+function log_R_at(t::Real, knots::Vector{Float64}, log_R)
+    t <= knots[1]   && return log_R[1]
+    t >= knots[end] && return log_R[end]
+    b = searchsortedlast(knots, t)
+    w = (t - knots[b]) / (knots[b + 1] - knots[b])
+    return (1 - w) * log_R[b] + w * log_R[b + 1]
 end
 
-# Pretty labels for the R(t) bins, used in summaries and posterior output.
-function bin_labels()
-    labels = String[string("≤ ", BIN_EDGES[1])]
-    for i in 2:length(BIN_EDGES)
-        push!(labels, string(BIN_EDGES[i-1], " – ", BIN_EDGES[i]))
-    end
-    push!(labels, string("> ", BIN_EDGES[end]))
-    return labels
-end
+# Knot date labels, one per log_R entry, used in summaries and posterior output.
+knot_labels() = string.(KNOTS)
